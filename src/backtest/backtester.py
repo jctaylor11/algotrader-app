@@ -8,9 +8,9 @@ from src.backtest.fees import apply_trading_commissions
 from src.analysis.optimisation import grid_search_strategy, grid_search_optimal_params
 
 
-class Backtester():
-    def __init__(self, filepath, start, end, strategy_function, strategy_params:dict=None):
-        self.filepath = filepath
+class Backtester:
+    def __init__(self, dataframe, start, end, strategy_function, strategy_params:dict=None):
+        self.input_df = dataframe
         self.start = start
         self.end = end
         self.strategy_function = strategy_function
@@ -18,11 +18,22 @@ class Backtester():
 
         self.raw_data = self.get_data()
         self.results = None
+        self.performance_metrics = None
         self.commission = 0.1 / 100     # Hard-coded for now
 
     def get_data(self):
-        data = pd.read_csv(self.filepath, parse_dates=['date'], index_col='date')
-        data = data.loc[self.start:self.end].copy()
+        data = self.input_df.copy()
+        
+        # Validate correct format
+        if 'date' in data.columns:
+            data['date'] = pd.to_datetime(data["date"])
+            data = data.set_index('date')
+        elif data.index.name == 'date':
+            data.index = pd.to_datetime(data.index)
+        else:
+            raise ValueError("DateFrame must have a date column or 'date' as index name")
+            
+        data = data.loc[self.start:self.end]
         return data
 
     def optimise_strategy_params(self, optimisation_params, verbose=True): 
@@ -57,6 +68,8 @@ class Backtester():
         # Save the results as an attribute
         self.results = data
 
+        self.performance_metrics = get_performance_metrics(self.results)
+
     def print_performance(self):
         if self.results is None:
             print("No results yet - run 'run_strategy_backtest()' first")
@@ -73,12 +86,6 @@ class Backtester():
         print(tabulate(performance_metrics, headers='keys', tablefmt='pretty'))
 
         return performance_metrics
-    
-    def get_results(self):
-        return self.results
-    
-    def get_positions(self):
-        return self.results['position']
 
     def plot_matplotlib(self):
         if self.results is None:

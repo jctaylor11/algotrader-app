@@ -1,0 +1,47 @@
+import plotly.graph_objects as go
+
+
+def build_results_plotly(results):
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=results.index,
+            y=(results['cum_return']-1)*100,    # Converts multiplier to %
+            name='Benchmark (Buy & Hold)',
+            line=dict(color='blue', width=2)
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=results.index,
+            y=(results['cum_strategy']-1)*100,
+            name='Strategy',
+            line=dict(color='red', width=2, dash='dash')
+        ))
+
+        fig.update_layout(
+            height=500,
+            width=800,
+            xaxis=dict(title='Date'),
+            yaxis=dict(title='Performance', ticksuffix='%'),
+            hovermode='x unified',
+            legend=dict(x=0.02, y=1.01, bgcolor='rgba(255,255,255,0)'),    # Setting the last to 0 so it's transparent),
+            margin=dict(t=20)
+            )
+
+        return fig
+
+
+def overlay_trades_plotly(position, fig):
+    position = position.copy()
+
+    trade = position.diff()
+    buy_times = trade[trade == 1].index
+    sell_times = trade[trade == -1].index
+
+    for buy_time in buy_times: 
+        fig.add_vline(x=buy_time, line_color="#7FFFD4", opacity=0.5)
+
+    for sell_time in sell_times:
+        fig.add_vline(x=sell_time, line_color="#FFB6C1", opacity=0.5)
+
+    return fig

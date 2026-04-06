@@ -1,135 +1,195 @@
 import streamlit as st
-import plotly.graph_objects as go
+import pandas as pd
 
-from src.backtest.backtester_class import Backtester
+from src.backtest.backtester import Backtester
+from src.ingestion.binance_ohlcv import fetch_custom_binance_ohlcv, fetch_min_volume_tickers
 from src.strategies.ma_crossover import ma_crossover_strategy
-from src.visualisation.plot_trades import overlay_trades_plotly
+from src.ui.components import render_ma_crossover_inputs
+from src.visualisation.plots import build_results_plotly, overlay_trades_plotly
 
-# Initialise sessions states
-if 'run_strategy_clicked' not in st.session_state:   # For persistent button behaviour since buttons don't retain state
-    st.session_state.run_strategy_clicked = False   
 
+def progress_cb(current_progress):
+    print(f"Current progress: {current_progress}")
+    if current_progress < 100:
+        loading_bar.progress(current_progress)
+    else:
+        loading_bar.empty()
+
+## Configuration ## 
+st.set_page_config(page_title="Algotrader", layout="wide")
+
+## Session state initialisation ##
+if 'custom_data' not in st.session_state:
+    st.session_state.custom_data = None
 if 'optimal_params' not in st.session_state:
     st.session_state.optimal_params = None
+if 'run_strategy_clicked' not in st.session_state:   # Since buttons don't retain state
+    st.session_state.run_strategy_clicked = False  
+if 'backtester' not in st.session_state:
+    st.session_state.backtester = None
 
-if 'overlay_trades' not in st.session_state:
-    st.session_state.overlay_trades = False
 
-# Callback function for button click event
-def click_run_strategy():
-    st.session_state.run_strategy_clicked = True
+## Constants ##
+PRIMARY_AVAILABLE_PAIRS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 
+AVAILABLE_INTERVALS = ['1w', '1d', '4h', '1h']
+
+STRATEGY_MAPPING = {
+    "Strategy 1": {
+        "component": render_ma_crossover_inputs,
+        "function": ma_crossover_strategy
+    },
+    "Strategy 2": {
+        "component": render_ma_crossover_inputs,
+        "function": ma_crossover_strategy
+    }
+}
+
+## Side bar inputs ## 
+with st.sidebar:
+    st.header("Data Input")
+
+    # Fetches all tickers above a threshold 24hr volume to display in coin_pair selectbox
+    min_volume_for_tickers = 10000000
+    all_tickers = fetch_min_volume_tickers(min_volume=min_volume_for_tickers)
+    all_other_tickers = [ticker for ticker in all_tickers if ticker not in PRIMARY_AVAILABLE_PAIRS]  # To avoid duplicates
+    AVAILABLE_PAIRS = PRIMARY_AVAILABLE_PAIRS + [" ━━━━━━━ "] + all_other_tickers
+
+    # User inputs
+    coin_pair = st.selectbox("Pair", options=AVAILABLE_PAIRS, help=f"Items below divider are all Binance USDT pairs  \nwith a 24 hour volume greater than ${min_volume_for_tickers:,}.")
+    interval = st.selectbox("Interval", options=AVAILABLE_INTERVALS, index=3)
+    start = st.date_input("Start", "2024-01-01")
+    end = st.date_input("End", "2025-01-01")
+
+    if st.button("Load Data", width="stretch"):
+        if start > end: 
+            st.error("Start must be before end")
+        elif coin_pair not in all_tickers:
+            st.error("Select a valid coin pair")
+        else:
+            loading_bar = st.progress(0, "Loading")
+            try:
+                custom_data = fetch_custom_binance_ohlcv(coin_pair, interval, str(start), str(end), progress_cb)
+
+                if custom_data is not None and not custom_data.empty: 
+                    st.session_state.custom_data = custom_data
+                    st.session_state.custom_data_info = {
+                        "Pair": coin_pair,
+                        "Interval": interval,
+                        "Start": str(start),
+                        "End": str(end),
+                        "Rows": str(len(custom_data))   # All values are strings for compatibility with Streamlit's PyArrow
+                    }
+                else:
+                    st.error("No data found")
+
+            except Exception as e:
+                st.error(f"Failed to load data: {str(e)}")
+
+
+    if st.session_state.custom_data is not None: 
+        st.success(f"Loaded")
+
+        custom_data_info = pd.Series(st.session_state.custom_data_info, name="Loaded Data")
+        st.dataframe(custom_data_info)
+
+## Main area ##
 st.title("Algotrader")
 
-st.divider()
+if st.session_state.custom_data is not None:
+    st.subheader("Strategy")
 
-# List of strategies for the selectbox
-strategy_options = ['Strategy 1', 'Strategy 2']
+    with st.container(border=True):
 
-# Input fields for object instantiation
-left_column, right_column = st.columns(2)
-start = left_column.date_input("Start date", value='2024-01-01')
-end = right_column.date_input("End date", value='2025-01-01')
-strategy = st.selectbox('Select strategy', strategy_options, index=None)
+        strategy_options = list(STRATEGY_MAPPING)
+        selected_strategy = st.selectbox(label="Select Strategy", options=strategy_options, index=None)
 
-# Additional input required for selected strategy
-strategy_params = {}
-if strategy == 'Strategy 1' or strategy == 'Strategy 2':        # For now only one strategy, but keep selection logic
-    ma_s_min = 5
-    ma_s_max = 100
-    ma_s_default = 20
-    ma_l_min = 10
-    ma_l_max = 200
-    ma_l_default = 50
+        if selected_strategy in strategy_options:
+            # Retrieves selected strategy's function to render UI components 
+            render_strategy_function = STRATEGY_MAPPING[selected_strategy]["component"]  
 
-    # The default values are either set defaults, or the optimal parameters if they exist
-    optimal_params = st.session_state.optimal_params
-    ma_s_set = optimal_params["ma_s"] if optimal_params is not None else ma_s_default
-    ma_l_set = optimal_params["ma_l"] if optimal_params is not None else ma_l_default
+            # Renders strategy's UI components and receives selected parameters
+            strategy_params = render_strategy_function(dataframe=st.session_state.custom_data, start=start, end=end)     
 
-    # Set the sliders and update strategy params 
-    ma_s = st.slider("MA_S", ma_s_min, ma_s_max, value=ma_s_set)
-    ma_l = st.slider("MA_L", ma_l_min, ma_l_max, value=ma_l_set)
-    strategy_params = {'ma_s': ma_s, 'ma_l': ma_l}
+            # Retrieves selected stratgey's logic function
+            selected_strategy_function = STRATEGY_MAPPING[selected_strategy]["function"]
 
-    # Filepath hardcoded for now - TODO: Parameterise with function that downloads (and caches) the data for a chosen coin 
-    filepath = 'data/raw_ohlcv/BTCUSDT-1h-2017-08-17.csv'
+        if selected_strategy and st.button("Run Backtest", type="primary", width="stretch"):
+            st.session_state.run_strategy_clicked = True
+            st.session_state.strategy_params = strategy_params
 
-    # Optimisation section - update the session state with optimal params after found
-    if st.button("Find optimal parameters"):    # This will update the optimal parameters - and if the exist, will change the display (separate block)
-        bot = Backtester(
-            filepath=filepath,
-            start=start,
-            end=end,
-            strategy_function=ma_crossover_strategy,
-        )
+            try:
+                # Instantiates backtester, runs the test, and stores the object
+                backtester = Backtester(
+                    dataframe=st.session_state.custom_data,
+                    start=start,
+                    end=end,
+                    strategy_function=selected_strategy_function,       
+                    strategy_params=strategy_params
+                )
+                backtester.run_strategy_backtest()
+                st.session_state.backtester = backtester
 
-        with st.spinner("Computing optimal parameters", show_time=True):
-            optimals = bot.optimise_strategy_params({"ma_s": range(ma_s_min, ma_s_max, 1), "ma_l": range(ma_l_min, ma_l_max, 1)})   # PARAMS RANGE DICT GOES AS AN ARGUMENT - taken from slider range
-        st.session_state.optimal_params = optimals
-        st.rerun()
+            except Exception as e: 
+                st.error(f"Error: {str(e)}. Check your inputs") 
 
-    if st.session_state.optimal_params:
-        st.success(f"Optimal strategy parameters in sample are {optimal_params['ma_s']} and {optimal_params['ma_l']}")
+else:
+    st.info("Select and load data from the sidebar to begin")
 
-st.divider()
-st.button("Run strategy", on_click=click_run_strategy)
+if st.session_state.run_strategy_clicked:
+    st.divider()
+    st.subheader("Performance")
 
-# Once the button is clicked, the strategy backtest is run and results displayed
-if st.session_state.run_strategy_clicked == True:
-    try:
-        # Adding the strategy parmas as an attribute to the object
-        bot = Backtester(
-            filepath=filepath,
-            start=start,
-            end=end,
-            strategy_function=ma_crossover_strategy,
-            strategy_params=strategy_params
-        )
-
+    with st.container():
         # Runs the backtest and get results
-        bot.run_strategy_backtest()
-        performance_table = bot.print_performance()
-        results = bot.get_results()
+        performance_metrics = st.session_state.backtester.performance_metrics
+        results = st.session_state.backtester.results
 
-        # Show the performance
-        st.write(performance_table)
+        total_return = performance_metrics.loc["Strategy", "Total Return"]
+        benchmark_return = performance_metrics.loc["Buy & Hold", "Total Return"]
+        excess_return = total_return - benchmark_return
+
+        # Formatting the metrics for significant figures to display
+        display_metrics = performance_metrics.copy()
+        for col in display_metrics.columns:
+            if col in ('CAGR', 'Total Return'):
+                display_metrics[col] = display_metrics[col].map("{:.0%}".format)
+            else:
+                display_metrics[col] = display_metrics[col].map("{:.2f}".format)
+
+        # List of tuples for display in format (label, value, delta, help message)
+        metrics_to_display = [
+            ("Total Return",     display_metrics.loc["Strategy", "Total Return"], f"{excess_return:.0%}", "Total Return excluding fees (for now).  \nDelta shows excess return against benchmark."),
+            ("Benchmark Return", display_metrics.loc["Buy & Hold", "Total Return"], "",                   "Buy & Hold used as benchmark"),
+            ("Volatility",       display_metrics.loc["Strategy", "Ann StDev"],    "",                     ""),
+            ("Sharpe Ratio",     display_metrics.loc["Strategy", "Sharpe Ratio"], "",                     "")
+        ]
+
+        # CAGR only displays if greater than a year - 400 days to avoid 'approx 1 year' rounding with 10% 
+        display_cagr = (end - start).days > 400
+        if display_cagr:
+            metrics_to_display.insert(2, ("CAGR", display_metrics.loc["Strategy Net", "CAGR"], "", ""))
+
+        # Displays each metric in display_metric in columns
+        for col, (label, value, delta, help) in zip(st.columns(len(metrics_to_display)), metrics_to_display):
+            col.metric(label, value, delta=delta, help=help)
+        
+        st.divider()
+
+        fig = build_results_plotly(results)
 
         overlay_trades = st.checkbox(label="Overlay trades on chart")
 
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter(
-            x=results.index,
-            y=(results['cum_return']-1)*100,    # Converts multiplier to %
-            name='Benchmark (Buy & Hold)',
-            line=dict(color='blue', width=2)
-        ))
-
-        fig.add_trace(go.Scatter(
-            x=results.index,
-            y=(results['cum_strategy']-1)*100,
-            name='Strategy',
-            line=dict(color='red', width=2, dash='dash')
-        ))
-
-        fig.update_layout(
-            height=500,
-            width=800,
-            xaxis=dict(title='Date'),
-            yaxis=dict(title='Performance', ticksuffix='%'),
-            hovermode='x unified',
-            legend=dict(x=0.02, y=1.01, bgcolor='rgba(255,255,255,0)'),    # Setting the last to 0 so it's transparent),
-            margin=dict(t=20)
-            )
-        
         if overlay_trades:
-            # fig = overlay_trades_plotly(results['position', fig])
-            with st.spinner('Processing trades'):
+            with st.spinner('Processing trades', show_time=True):
                 fig = overlay_trades_plotly(results['position'], fig)
 
-        st.plotly_chart(fig, use_container_width=False)
+        st.plotly_chart(fig, width="stretch")
 
-    
-    except Exception as e: 
-        st.error(f"Error: {str(e)}. Check your inputs") 
+        # Show the performance
+        if display_cagr:
+            st.dataframe(display_metrics)
+        else:
+            st.dataframe(display_metrics.drop(columns="CAGR"))
+
+

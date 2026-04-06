@@ -2,8 +2,6 @@ from itertools import product
 import numpy as np
 import pandas as pd
 
-from src.strategies.ma_crossover import ma_crossover_strategy
-
 def grid_search_strategy(df, strategy, params_dict: dict[str, range | list]) -> pd.DataFrame:    
     dict_keys = params_dict.keys()
     dict_values = params_dict.values()
