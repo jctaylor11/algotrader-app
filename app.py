@@ -8,25 +8,24 @@ from src.ui.components import render_ma_crossover_inputs
 from src.visualisation.plots import build_results_plotly, overlay_trades_plotly
 
 
-def progress_cb(current_progress):
-    print(f"Current progress: {current_progress}")
-    if current_progress < 100:
-        loading_bar.progress(current_progress)
-    else:
-        loading_bar.empty()
-
 ## Configuration ## 
 st.set_page_config(page_title="Algotrader", layout="wide")
 
 ## Session state initialisation ##
 if 'custom_data' not in st.session_state:
     st.session_state.custom_data = None
+if 'custom_data_info' not in st.session_state:
+    st.session_state.custom_data_info = None
 if 'optimal_params' not in st.session_state:
     st.session_state.optimal_params = None
 if 'run_strategy_clicked' not in st.session_state:   # Since buttons don't retain state
     st.session_state.run_strategy_clicked = False  
 if 'backtester' not in st.session_state:
     st.session_state.backtester = None
+if 'strategy_params' not in st.session_state:
+    st.session_state.strategy_params = None
+if 'prev_strategy_params' not in st.session_state:
+    st.session_state.prev_strategy_params = None
 
 
 ## Constants ##
@@ -68,6 +67,15 @@ with st.sidebar:
             st.error("Select a valid coin pair")
         else:
             loading_bar = st.progress(0, "Loading")
+
+            # Callback function for loading bar progress, passed to data fetch function
+            def progress_cb(current_progress):
+                print(f"Current progress: {current_progress}")
+                if current_progress < 100:
+                    loading_bar.progress(current_progress)
+                else:
+                    loading_bar.empty()  
+
             try:
                 custom_data = fetch_custom_binance_ohlcv(coin_pair, interval, str(start), str(end), progress_cb)
 
@@ -108,15 +116,19 @@ if st.session_state.custom_data is not None:
             # Retrieves selected strategy's function to render UI components 
             render_strategy_function = STRATEGY_MAPPING[selected_strategy]["component"]  
 
+            # Store to old strategy_params before they update
+            st.session_state.prev_strategy_params = st.session_state.strategy_params
             # Renders strategy's UI components and receives selected parameters
-            strategy_params = render_strategy_function(dataframe=st.session_state.custom_data, start=start, end=end)     
+            st.session_state.strategy_params = render_strategy_function(dataframe=st.session_state.custom_data, start=start, end=end)     
 
             # Retrieves selected stratgey's logic function
             selected_strategy_function = STRATEGY_MAPPING[selected_strategy]["function"]
 
-        if selected_strategy and st.button("Run Backtest", type="primary", width="stretch"):
+        run_backtest_button = st.button("Run Backtest", type="primary", width="stretch")
+
+        # Checks if button clicked or that prev_strategy_params != strategy_params so the plot updates live with changes
+        if selected_strategy and (run_backtest_button or (st.session_state.prev_strategy_params != st.session_state.strategy_params and st.session_state.run_strategy_clicked)):
             st.session_state.run_strategy_clicked = True
-            st.session_state.strategy_params = strategy_params
 
             try:
                 # Instantiates backtester, runs the test, and stores the object
@@ -125,7 +137,7 @@ if st.session_state.custom_data is not None:
                     start=start,
                     end=end,
                     strategy_function=selected_strategy_function,       
-                    strategy_params=strategy_params
+                    strategy_params=st.session_state.strategy_params
                 )
                 backtester.run_strategy_backtest()
                 st.session_state.backtester = backtester
